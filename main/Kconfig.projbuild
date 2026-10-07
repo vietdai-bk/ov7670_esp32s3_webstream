@@ -1,0 +1,57 @@
+menu "OV7670 Webcam"
+
+    config APP_WIFI_SSID
+        string "WiFi SSID (de trong = chay SoftAP)"
+        default ""
+
+    config APP_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config APP_WIFI_MAX_RETRY
+        int "So lan thu ket noi WiFi truoc khi chuyen sang SoftAP"
+        default 5
+
+    config APP_AP_SSID
+        string "SoftAP SSID"
+        default "OV7670-CAM"
+
+    config APP_AP_PASSWORD
+        string "SoftAP password (>= 8 ky tu)"
+        default "12345678"
+
+    config APP_XCLK_MHZ
+        int "XCLK frequency (MHz)"
+        range 5 20
+        default 10
+        help
+            10 MHz on dinh hon voi day jump. Co the tang len 20 neu day ngan.
+
+    config APP_JPEG_QUALITY
+        int "JPEG quality (5..63, so nho = chat luong cao)"
+        range 5 63
+        default 12
+
+    choice APP_FRAME_SIZE
+        prompt "Frame size"
+        default APP_FRAME_QVGA
+
+        config APP_FRAME_QQVGA
+            bool "QQVGA 160x120"
+        config APP_FRAME_QVGA
+            bool "QVGA 320x240"
+        config APP_FRAME_VGA
+            bool "VGA 640x480 (can PSRAM)"
+    endchoice
+
+    choice APP_PIXFMT
+        prompt "Pixel format tu cam bien"
+        default APP_PIXFMT_RGB565
+
+        config APP_PIXFMT_RGB565
+            bool "RGB565"
+        config APP_PIXFMT_YUV422
+            bool "YUV422 (thu cai nay neu mau sai/ngoai y muon)"
+    endchoice
+
+endmenu
