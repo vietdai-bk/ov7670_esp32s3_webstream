@@ -1,16 +1,13 @@
 /*
- * ESP32-S3 + OV7670 -> MJPEG webserver (ESP-IDF 5.x, esp32-camera)
+ * main.c - ESP32-S3 + OV7670: chi stream camera len web
  *
- * Wiring (OV7670 -> ESP32-S3):
- *   SDA=16 SCL=17 XCLK=12 PCLK=13 HREF=15 VSYNC=14
- *   D0..D7 = GPIO4..GPIO11
- *   RST -> 3.3V, PWDN -> GND  (khong dung chan GPIO)
- *
- * Endpoints:
- *   http://<ip>/          trang web
- *   http://<ip>/capture   1 anh JPEG
- *   http://<ip>:81/stream MJPEG stream
+ *  - Camera OV7670 (Pins: SDA=16, SCL=17, XCLK=12, PCLK=13, HREF=15, VSYNC=14, D0..D7=GPIO4..11)
+ *  - Webserver:
+ *      http://<ip>/            trang web xem stream
+ *      http://<ip>/capture     1 anh JPEG
+ *      http://<ip>:81/stream   MJPEG stream
  */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -34,9 +31,9 @@
 #include "img_converters.h"
 #include "sdkconfig.h"
 
-static const char *TAG = "ov7670_cam";
+static const char *TAG = "cam_stream";
 
-/* ---------------- Pin map ---------------- */
+/* ---------------- Pin map OV7670 -> ESP32-S3 ---------------- */
 #define CAM_PIN_PWDN   -1   /* PWDN noi GND */
 #define CAM_PIN_RESET  -1   /* RST noi 3.3V */
 #define CAM_PIN_XCLK   12
@@ -54,14 +51,47 @@ static const char *TAG = "ov7670_cam";
 #define CAM_PIN_HREF   15
 #define CAM_PIN_PCLK   13
 
-/* frame2jpg dung thang do 1..100 (so lon = chat luong cao) */
 #define JPEG_QUALITY_PERCENT  (100 - (CONFIG_APP_JPEG_QUALITY * 100 / 63))
 
-/* ---------------- Camera ---------------- */
+/* Thanh ghi chat luong anh OV7670 (gamma, AEC/AGC, AWB, ma tran mau) lay tu driver Linux
+ * drivers/media/i2c/ov7670.c. Driver esp32-camera chi ghi bo toi gian -> anh chay sang, am tim.
+ * Bo qua clock/cua so/scaling de khong doi FPS va khung hinh. */
+static const uint8_t OV7670_QUALITY_REGS[][2] = {
+    /* Gamma */
+    {0x7a,0x20},{0x7b,0x10},{0x7c,0x1e},{0x7d,0x35},{0x7e,0x5a},{0x7f,0x69},{0x80,0x76},{0x81,0x80},
+    {0x82,0x88},{0x83,0x8f},{0x84,0x96},{0x85,0xa3},{0x86,0xaf},{0x87,0xc4},{0x88,0xd7},{0x89,0xe8},
+    /* AGC/AEC: tat truoc khi chinh. AEC kieu trung binh (0xaa=0x14, Linux dung histogram 0x94 bo qua AEW/AEB), muc sang AEW/AEB/VPT */
+    {0x13,0xe0},{0x00,0x00},{0x10,0x00},{0x0d,0x40},{0x14,0x18},{0xa5,0x05},{0xab,0x07},
+    {0x24,0xa0},{0x25,0x90},{0x26,0xe5},{0x9f,0x78},{0xa0,0x68},{0xa1,0x03},{0xa6,0xd8},
+    {0xa7,0xd8},{0xa8,0xf0},{0xa9,0x90},{0xaa,0x14},{0x13,0xe5},
+    /* Reserved "magic" */
+    {0x0e,0x61},{0x0f,0x4b},{0x16,0x02},{0x1e,0x07},{0x21,0x02},{0x22,0x91},{0x29,0x07},{0x33,0x0b},
+    {0x35,0x0b},{0x37,0x1d},{0x38,0x71},{0x39,0x2a},{0x3c,0x78},{0x4d,0x40},{0x4e,0x20},{0x69,0x00},
+    {0x74,0x10},{0x8d,0x4f},{0x8e,0x00},{0x8f,0x00},{0x90,0x00},{0x91,0x00},{0x96,0x00},{0x9a,0x00},
+    {0xb0,0x84},{0xb1,0x0c},{0xb2,0x0e},{0xb3,0x82},{0xb8,0x0a},
+    /* Can bang trang (AWB) */
+    {0x43,0x0a},{0x44,0xf0},{0x45,0x34},{0x46,0x58},{0x47,0x28},{0x48,0x3a},{0x59,0x88},{0x5a,0x88},
+    {0x5b,0x44},{0x5c,0x67},{0x5d,0x49},{0x5e,0x0e},{0x6c,0x0a},{0x6d,0x55},{0x6e,0x11},{0x6f,0x9f},
+    {0x6a,0x40},{0x01,0x40},{0x02,0x60},{0x13,0xe7},
+    /* Ma tran, edge, denoise, banding */
+    {0x58,0x9e},{0x41,0x08},{0x3f,0x00},{0x75,0x05},{0x76,0xe1},{0x4c,0x00},{0x77,0x01},{0x4b,0x09},
+    {0xc9,0x60},{0x41,0x38},{0x56,0x40},{0x34,0x11},{0x3b,0x12},{0xa4,0x88},{0x96,0x00},{0x97,0x30},
+    {0x98,0x20},{0x99,0x30},{0x9a,0x84},{0x9b,0x29},{0x9c,0x03},{0x9d,0x4c},{0x9e,0x3f},{0x78,0x04},
+    {0x79,0x01},{0xc8,0xf0},{0x79,0x0f},{0xc8,0x00},{0x79,0x10},{0xc8,0x7e},{0x79,0x0a},{0xc8,0x80},
+    {0x79,0x0b},{0xc8,0x01},{0x79,0x0c},{0xc8,0x0f},{0x79,0x0d},{0xc8,0x20},{0x79,0x09},{0xc8,0x80},
+    {0x79,0x02},{0xc8,0xc0},{0x79,0x03},{0xc8,0x40},{0x79,0x05},{0xc8,0x30},{0x79,0x26},
+#if CONFIG_APP_PIXFMT_YUV422
+    {0x14,0x18},{0x4f,0x80},{0x50,0x80},{0x51,0x00},{0x52,0x22},{0x53,0x5e},{0x54,0x80},{0x3d,0xc0},
+#else
+    {0x14,0x38},{0x4f,0xb3},{0x50,0xb3},{0x51,0x00},{0x52,0x3d},{0x53,0xa7},{0x54,0xe4},{0x3d,0xc0},
+#endif
+};
+
+/* ---------------- Camera Initialization ---------------- */
 static esp_err_t camera_init(void)
 {
     bool psram = esp_psram_is_initialized();
-    ESP_LOGI(TAG, "PSRAM: %s", psram ? "yes" : "no");
+    ESP_LOGI(TAG, "PSRAM Initialization: %s", psram ? "YES (Octal)" : "NO");
 
     framesize_t fs;
 #if CONFIG_APP_FRAME_QQVGA
@@ -100,7 +130,7 @@ static esp_err_t camera_init(void)
     cfg.pixel_format = PIXFORMAT_RGB565;
 #endif
     cfg.frame_size   = fs;
-    cfg.jpeg_quality = CONFIG_APP_JPEG_QUALITY; /* khong dung voi OV7670, giu cho day du */
+    cfg.jpeg_quality = CONFIG_APP_JPEG_QUALITY;
 
     if (psram) {
         cfg.fb_count    = 2;
@@ -120,8 +150,26 @@ static esp_err_t camera_init(void)
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        ESP_LOGI(TAG, "Sensor PID=0x%02x VER=0x%02x MIDH=0x%02x MIDL=0x%02x",
-                 s->id.PID, s->id.VER, s->id.MIDH, s->id.MIDL);
+        ESP_LOGI(TAG, "Sensor PID=0x%02x VER=0x%02x", s->id.PID, s->id.VER);
+        /* Driver ov7670 doc CLKRC qua SCCB bi loi (tra ve 0xa1) roi ghi lai -> clock chia 34, ~1 FPS.
+         * shortcut: ghi de CLKRC sau init, bo khi driver esp32-camera sua loi doc SCCB. */
+        extern int SCCB_Write(uint8_t, uint8_t, uint8_t);
+        SCCB_Write(s->slv_addr, 0x11, CONFIG_APP_OV7670_CLKRC);
+        for (size_t i = 0; i < sizeof(OV7670_QUALITY_REGS) / sizeof(OV7670_QUALITY_REGS[0]); i++) {
+            if (SCCB_Write(s->slv_addr, OV7670_QUALITY_REGS[i][0], OV7670_QUALITY_REGS[i][1]) != 0) {
+                ESP_LOGW(TAG, "Ghi thanh ghi OV7670 0x%02x loi", OV7670_QUALITY_REGS[i][0]);
+            }
+        }
+        /* Cua so anh: driver dung hstart=158 cho QVGA va xoa bit HREF[7:6] -> ~8 cot rac xanh/vang o
+         * mep trai. Dung gia tri cua driver Linux, giu HREF edge offset = 0x80 (gia tri reset). */
+        int hs = 172, he = 28, vs = 12, ve = 492;
+        if (fs == FRAMESIZE_VGA) { hs = 158; he = 14; vs = 10; ve = 490; }
+        SCCB_Write(s->slv_addr, 0x17, hs >> 3);                                  /* HSTART */
+        SCCB_Write(s->slv_addr, 0x18, he >> 3);                                  /* HSTOP */
+        SCCB_Write(s->slv_addr, 0x32, 0x80 | ((he & 7) << 3) | (hs & 7));        /* HREF */
+        SCCB_Write(s->slv_addr, 0x19, vs >> 2);                                  /* VSTRT */
+        SCCB_Write(s->slv_addr, 0x1a, ve >> 2);                                  /* VSTOP */
+        SCCB_Write(s->slv_addr, 0x03, ((ve & 3) << 2) | (vs & 3));               /* VREF */
     }
     return ESP_OK;
 }
@@ -142,7 +190,8 @@ static bool grab_jpeg(uint8_t **out, size_t *out_len)
     return ok;
 }
 
-/* ---------------- Web server ---------------- */
+/* ---------------- HTTP Handlers ---------------- */
+
 static const char INDEX_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -164,12 +213,14 @@ static const char INDEX_HTML[] =
 "window.onload=start;"
 "</script></body></html>";
 
+/* 1. Trang web */
 static esp_err_t index_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+/* 2. Snapshot JPEG */
 static esp_err_t capture_handler(httpd_req_t *req)
 {
     uint8_t *jpg = NULL;
@@ -186,6 +237,7 @@ static esp_err_t capture_handler(httpd_req_t *req)
     return res;
 }
 
+/* 3. MJPEG Stream */
 #define STREAM_BOUNDARY "frameboundary1234567890"
 static const char *STREAM_CT   = "multipart/x-mixed-replace;boundary=" STREAM_BOUNDARY;
 static const char *STREAM_SEP  = "\r\n--" STREAM_BOUNDARY "\r\n";
@@ -197,16 +249,30 @@ static esp_err_t stream_handler(httpd_req_t *req)
     if (res != ESP_OK) return res;
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-    int64_t t0 = esp_timer_get_time();
+    /* Thong ke FPS: cong don thoi gian tung buoc, in log moi giay */
     int frames = 0;
+    int64_t t_cap = 0, t_enc = 0, t_send = 0, bytes = 0;
+    int64_t t_win = esp_timer_get_time();
 
     while (true) {
-        uint8_t *jpg = NULL;
-        size_t len = 0;
-        if (!grab_jpeg(&jpg, &len)) {
+        int64_t t0 = esp_timer_get_time();
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            ESP_LOGE(TAG, "Camera capture failed");
             res = ESP_FAIL;
             break;
         }
+        int64_t t1 = esp_timer_get_time();
+        uint8_t *jpg = NULL;
+        size_t len = 0;
+        bool ok = frame2jpg(fb, JPEG_QUALITY_PERCENT, &jpg, &len);
+        esp_camera_fb_return(fb);
+        if (!ok) {
+            ESP_LOGE(TAG, "JPEG compression failed");
+            res = ESP_FAIL;
+            break;
+        }
+        int64_t t2 = esp_timer_get_time();
 
         char hdr[80];
         size_t hlen = snprintf(hdr, sizeof(hdr), STREAM_PART, (unsigned)len);
@@ -216,23 +282,27 @@ static esp_err_t stream_handler(httpd_req_t *req)
         if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)jpg, len);
         free(jpg);
         if (res != ESP_OK) break;
+        int64_t t3 = esp_timer_get_time();
 
-        if (++frames % 60 == 0) {
-            int64_t now = esp_timer_get_time();
-            ESP_LOGI(TAG, "stream: %.1f fps", 60.0 * 1e6 / (double)(now - t0));
-            t0 = now;
+        frames++;
+        t_cap += t1 - t0; t_enc += t2 - t1; t_send += t3 - t2; bytes += len;
+        if (t3 - t_win >= 1000000) {
+            ESP_LOGI(TAG, "FPS %.1f | cap %lldms enc %lldms send %lldms | %lldKB/frame",
+                     frames * 1e6 / (t3 - t_win), t_cap / frames / 1000, t_enc / frames / 1000,
+                     t_send / frames / 1000, bytes / frames / 1024);
+            frames = 0; t_cap = t_enc = t_send = bytes = 0; t_win = t3;
         }
     }
-    ESP_LOGI(TAG, "stream closed");
     return res;
 }
 
+/* ---------------- Web Server Setup ---------------- */
 static void start_webservers(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
+    cfg.stack_size = 12288;
     cfg.lru_purge_enable = true;
-    cfg.max_open_sockets = 4;
+    cfg.max_open_sockets = 5;
 
     httpd_uri_t index_uri   = { .uri = "/",        .method = HTTP_GET, .handler = index_handler,   .user_ctx = NULL };
     httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL };
@@ -240,28 +310,26 @@ static void start_webservers(void)
 
     httpd_handle_t main_srv = NULL, stream_srv = NULL;
 
+    /* Main Server Port 80 */
     cfg.server_port = 80;
     cfg.ctrl_port   = 32768;
     if (httpd_start(&main_srv, &cfg) == ESP_OK) {
         httpd_register_uri_handler(main_srv, &index_uri);
         httpd_register_uri_handler(main_srv, &capture_uri);
-        ESP_LOGI(TAG, "Web server on port 80");
-    } else {
-        ESP_LOGE(TAG, "Failed to start web server (80)");
+        ESP_LOGI(TAG, "Web Server started on port 80");
     }
 
+    /* Stream Server Port 81 */
     cfg.server_port = 81;
     cfg.ctrl_port   = 32769;
     cfg.max_open_sockets = 3;
     if (httpd_start(&stream_srv, &cfg) == ESP_OK) {
         httpd_register_uri_handler(stream_srv, &stream_uri);
-        ESP_LOGI(TAG, "Stream server on port 81");
-    } else {
-        ESP_LOGE(TAG, "Failed to start stream server (81)");
+        ESP_LOGI(TAG, "Camera Stream Server started on port 81");
     }
 }
 
-/* ---------------- WiFi ---------------- */
+/* ---------------- WiFi Management ---------------- */
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
@@ -282,7 +350,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
-        ESP_LOGI(TAG, "==> Mo trinh duyet: http://" IPSTR "/", IP2STR(&e->ip_info.ip));
+        ESP_LOGI(TAG, "==> KET NOI THANH CONG! Mo trinh duyet: http://" IPSTR "/", IP2STR(&e->ip_info.ip));
         s_retry = 0;
         xEventGroupSetBits(s_wifi_eg, WIFI_CONNECTED_BIT);
     }
@@ -302,8 +370,8 @@ static void start_softap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK(esp_wifi_start());
     esp_wifi_set_ps(WIFI_PS_NONE);
-    ESP_LOGI(TAG, "SoftAP: SSID=%s PASS=%s", CONFIG_APP_AP_SSID, CONFIG_APP_AP_PASSWORD);
-    ESP_LOGI(TAG, "==> Ket noi WiFi do roi mo: http://192.168.4.1/");
+    ESP_LOGI(TAG, "Khoi dong SoftAP: SSID='%s'", CONFIG_APP_AP_SSID);
+    ESP_LOGI(TAG, "==> Ket noi WiFi do roi mo trinh duyet: http://192.168.4.1/");
 }
 
 static void wifi_start(void)
@@ -321,7 +389,7 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
     if (strlen(CONFIG_APP_WIFI_SSID) == 0) {
-        ESP_LOGI(TAG, "Khong co SSID -> chay SoftAP");
+        ESP_LOGI(TAG, "SSID de trong -> khoi dong SoftAP");
         start_softap();
         return;
     }
@@ -334,11 +402,12 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
     ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_ps(WIFI_PS_NONE); /* power save mac dinh lam stream giat, send 50-600ms */
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, portMAX_DELAY);
+                                           pdFALSE, pdFALSE, pdMS_TO_TICKS(10000));
     if (!(bits & WIFI_CONNECTED_BIT)) {
-        ESP_LOGW(TAG, "Ket noi '%s' that bai -> chuyen sang SoftAP", CONFIG_APP_WIFI_SSID);
+        ESP_LOGW(TAG, "Ket noi '%s' that bai hoac timeout -> chuyen sang SoftAP", CONFIG_APP_WIFI_SSID);
         esp_wifi_stop();
         start_softap();
     }
@@ -354,11 +423,19 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    ESP_LOGI(TAG, "=== ESP32-S3 + OV7670: STREAM CAMERA ===");
+
+    /* 1. Khoi tao Camera OV7670 */
     if (camera_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Camera loi. Kiem tra day noi (dac biet SDA/SCL pull-up, XCLK, nguon 3.3V).");
+        ESP_LOGE(TAG, "Camera loi! Kiem tra cac chan cam OV7670 (SDA=16, SCL=17, XCLK=12, PCLK=13)");
         return;
     }
 
+    /* 2. Ket noi WiFi / SoftAP */
     wifi_start();
+
+    /* 3. Khoi dong Web Server */
     start_webservers();
+
+    ESP_LOGI(TAG, "San sang! Mo trinh duyet de xem camera.");
 }

@@ -27,6 +27,13 @@ menu "OV7670 Webcam"
         help
             10 MHz on dinh hon voi day jump. Co the tang len 20 neu day ngan.
 
+    config APP_OV7670_CLKRC
+        int "OV7670 CLKRC prescaler (FPS cam bien = max / (gia tri + 1))"
+        range 0 31
+        default 1
+        help
+            0 = nhanh nhat. Tang len neu anh bi soc/nhieu do day jump dai.
+
     config APP_JPEG_QUALITY
         int "JPEG quality (5..63, so nho = chat luong cao)"
         range 5 63

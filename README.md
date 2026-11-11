@@ -30,3 +30,12 @@ Lan build dau can internet de tai component `espressif/esp32-camera`.
   `Component config -> ESP PSRAM -> Mode` sang Quad. Khong co PSRAM van chay (QVGA, 1 buffer).
 - Hinh bi sai mau: menuconfig -> "Pixel format" -> YUV422.
 - Khong len hinh / loi SCCB: OV7670 can pull-up 4.7k cho SDA/SCL (nhieu module da co san), day ngan, giam XCLK xuong 8-10MHz.
+
+## Xem stream bang Python
+```bash
+python read_camera.py <ip_esp32>
+```
+
+## Thu muc `experimental/`
+Code VQA (detector, NLP, QA, dashboard) dang thu nghiem, **chua** duoc build vao firmware
+va **chua** chay model TFLite that. Mo ta y tuong: `experimental/README_vqa.md`.
