@@ -173,7 +173,3 @@ Chỉ là cảnh báo: board có flash 16MB nhưng project đang khai báo 4MB. 
 - Tốc độ khoảng 10 FPS ở QVGA (13 FPS với CLKRC=0), giới hạn bởi nén JPEG bằng phần mềm (~70ms/frame).
 - Code trong `experimental/` (phát hiện vật thể, NLP hỏi đáp) chưa chạy model TFLite thật và chưa được build. Mô tả ý tưởng: `experimental/README_vqa.md`.
 - Mỗi lúc chỉ nên mở một luồng `/stream`.
-
-## Giấy phép
-
-Chưa chọn giấy phép. Thêm file `LICENSE` (ví dụ MIT) theo nhu cầu.
